@@ -1,14 +1,11 @@
 import asyncio
-import os
 import pathlib
-import tempfile
 
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tempfile.mkdtemp()}/t.db"
 
-import litellm  # noqa: E402
+import litellm
 
-from agentshield import db, gateway, llm  # noqa: E402
-from agentshield.gateway import Denied  # noqa: E402
+from agentshield import db, gateway, llm
+from agentshield.gateway import Denied
 
 calls = []
 

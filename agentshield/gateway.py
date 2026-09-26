@@ -303,7 +303,7 @@ async def guarded_call(agent: dict, server: str, tool: str, args: dict, forward)
                 removed = 0
                 for c in result.content:
                     if isinstance(c, types.TextContent):
-                        c.text, n = await asyncio.to_thread(strip_injections, c.text, policy.injection_threshold)
+                        c.text, n, _ = await asyncio.to_thread(strip_injections, c.text, policy.injection_threshold)
                         removed += n
                 rest = _text(result).replace(STRIPPED, "")  # the marker itself reads like an injection to a model
                 if removed and (await scan(rest, policy.injection_threshold))[0] < policy.injection_threshold:

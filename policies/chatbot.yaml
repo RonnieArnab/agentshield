@@ -1,0 +1,6 @@
+# For chatbots and RAG apps that only use the LLM endpoint (no MCP tools).
+agent: chatbot
+default: deny
+on_prompt_injection: strip   # scan user messages and retrieved documents; remove injected paragraphs
+on_output_leak: mask         # hide secrets and card numbers in the model's answers
+on_budget_exceeded: downgrade

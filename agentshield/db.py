@@ -1,13 +1,15 @@
 import datetime as dt
 import os
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text, text
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text, inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
 
 URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///agentshield.db")
 if URL.startswith(("postgres://", "postgresql://")):  # hosted providers hand out driver-less URLs
     URL = "postgresql+asyncpg://" + URL.split("://", 1)[1]
-engine = create_async_engine(URL)
+# SQLite connections are cheap and tied to the event loop that opened them, so don't pool them
+engine = create_async_engine(URL, poolclass=NullPool) if URL.startswith("sqlite") else create_async_engine(URL)
 md = MetaData()
 
 
@@ -68,6 +70,7 @@ llm_calls = Table(
     Column("tokens_out", Integer),
     Column("cost_usd", Float),
     Column("latency_ms", Float),
+    Column("guard", Text),  # what the LLM-path guards did, as JSON
     _created(),
 )
 
@@ -95,6 +98,10 @@ alerts = Table(
 async def init():
     async with engine.begin() as c:
         await c.run_sync(md.create_all)
+        # ponytail: hand-rolled add-column migration; switch to Alembic once there is a second one
+        cols = await c.run_sync(lambda sc: [x["name"] for x in inspect(sc).get_columns("llm_calls")])
+        if "guard" not in cols:
+            await c.execute(text("ALTER TABLE llm_calls ADD COLUMN guard TEXT"))
         if c.dialect.name == "postgresql":  # audit tables are append-only at the DB level
             for t in ("tool_calls", "llm_calls"):
                 for op in ("UPDATE", "DELETE"):

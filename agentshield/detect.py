@@ -70,17 +70,18 @@ async def judge(text: str) -> bool:
 STRIPPED = "[removed by AgentShield: suspected injected instructions]"
 
 
-def strip_injections(text: str, threshold: float = 0.8) -> tuple[str, int]:
+def strip_injections(text: str, threshold: float = 0.8) -> tuple[str, int, list[str]]:
     """Drop paragraphs flagged by the rules or (if enabled) the classifier; keep the rest.
-    -> (clean text, paragraphs removed). CPU-bound when the classifier is on: call via a thread."""
+    -> (clean text, paragraphs removed, reasons). CPU-bound with the classifier on: call via a thread."""
     # ponytail: paragraph granularity; a payload spread across paragraphs that each look innocent survives,
     # which is why the caller re-scans the result.
     paras = re.split(r"(\n\s*\n)", text)
-    removed = 0
+    removed, reasons = 0, set()
     for i in range(0, len(paras), 2):
-        if rule_scan(paras[i]) or (CLASSIFIER and classify(paras[i]) >= threshold):
-            paras[i], removed = STRIPPED, removed + 1
-    return "".join(paras), removed
+        hits = rule_scan(paras[i]) or (["classifier"] if CLASSIFIER and classify(paras[i]) >= threshold else [])
+        if hits:
+            paras[i], removed, reasons = STRIPPED, removed + 1, reasons | set(hits)
+    return "".join(paras), removed, sorted(reasons)
 
 
 async def scan(text: str, threshold: float = 0.8) -> tuple[float, list[str]]:
@@ -129,6 +130,17 @@ def find_secrets(obj) -> list[str]:
 
 _EMAIL = re.compile(r"[\w.+-]+@([\w-]+\.[\w.-]+)")
 _PHONE = re.compile(r"(?<!\d)\+?\d[\d ()-]{8,}\d(?!\d)")
+
+
+def redact_secrets(text: str) -> tuple[str, list[str]]:
+    """Replace secrets and valid card numbers in free text. -> (clean text, kinds found)."""
+    kinds = find_secrets(text)
+    if not kinds:
+        return text, []
+    text = _SECRET.sub("[secret removed by AgentShield]", text)
+    text = _CARD.sub(lambda m: "[card number removed by AgentShield]" if _luhn(re.sub(r"\D", "", m.group()))
+                     else m.group(), text)
+    return text, kinds
 
 
 def mask(obj):

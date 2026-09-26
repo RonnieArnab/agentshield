@@ -107,6 +107,8 @@ class Policy:
     injection_threshold: float = 0.8
     on_budget_exceeded: str = "block"  # block | downgrade
     on_secret: str = "block"  # block | approve | allow: secrets or card numbers in outgoing arguments
+    on_prompt_injection: str = "allow"  # LLM path, user/tool messages: allow | warn | strip | block
+    on_output_leak: str = "mask"  # LLM path, model answers containing secrets: mask | block | allow
 
 
 def load_policy(src: str) -> Policy:
@@ -123,10 +125,15 @@ def load_policy(src: str) -> Policy:
                on_injection=d.get("on_injection", "block"),
                injection_threshold=float(d.get("injection_threshold", 0.8)),
                on_budget_exceeded=d.get("on_budget_exceeded", "block"),
-               on_secret=d.get("on_secret", "block"))
+               on_secret=d.get("on_secret", "block"),
+               on_prompt_injection=d.get("on_prompt_injection", "allow"),
+               on_output_leak=d.get("on_output_leak", "mask"))
     if p.default not in ACTIONS or p.on_injection not in ("block", "strip", "warn", "approve") \
-            or p.on_budget_exceeded not in ("block", "downgrade") or p.on_secret not in ("block", "approve", "allow"):
-        raise ValueError("bad default / on_injection / on_budget_exceeded / on_secret value")
+            or p.on_budget_exceeded not in ("block", "downgrade") or p.on_secret not in ("block", "approve", "allow") \
+            or p.on_prompt_injection not in ("allow", "warn", "strip", "block") \
+            or p.on_output_leak not in ("mask", "block", "allow"):
+        raise ValueError("bad default / on_injection / on_budget_exceeded / on_secret / "
+                         "on_prompt_injection / on_output_leak value")
     return p
 
 

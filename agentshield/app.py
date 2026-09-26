@@ -5,6 +5,7 @@ import logging
 import os
 import pathlib
 from contextlib import AsyncExitStack, asynccontextmanager
+from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -73,6 +74,28 @@ async def chat(body: dict, a: dict = Depends(agent)):
         raise
     except Exception as e:  # provider / LiteLLM errors: missing key, unknown model, upstream outage
         raise HTTPException(502, f"LLM provider error: {e}"[:500])
+
+
+class GuardRequest(BaseModel):
+    text: str
+    direction: Literal["input", "output"] = "input"  # input: text going INTO a model; output: text coming out
+
+
+@app.post("/v1/guard")
+async def guard(g: GuardRequest, a: dict = Depends(agent)):
+    """Check one piece of text without proxying the model call. Input: prompt injection
+    (returns the text with flagged paragraphs removed). Output: secrets and card numbers (returns it masked)."""
+    await gateway.check_rate(a["id"])
+    if g.direction == "output":
+        text, kinds = detect.redact_secrets(g.text)
+        return {"flagged": bool(kinds), "kinds": kinds, "text": text}
+    thr = (await gateway.get_policy(a["policy"])).injection_threshold
+    score, reasons = await detect.scan(g.text, thr)
+    text, removed = g.text, 0
+    if score >= thr:
+        text, removed, reasons = await asyncio.to_thread(detect.strip_injections, g.text, thr)
+    return {"flagged": score >= thr, "score": round(score, 3), "reasons": reasons,
+            "paragraphs_removed": removed, "text": text}
 
 
 class NewAgent(BaseModel):

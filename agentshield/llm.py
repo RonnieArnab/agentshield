@@ -1,5 +1,7 @@
 """LLM path: budget -> route by difficulty -> semantic cache -> provider (via LiteLLM) -> audit.
 Supports stream=true (server-sent events, logged with usage when the stream ends)."""
+import asyncio
+import json
 import math
 import os
 import re
@@ -11,8 +13,8 @@ from prometheus_client import Counter
 from sqlalchemy import func, insert, select
 
 from . import db, state
-from .detect import has_pii
-from .gateway import Denied, check_rate, get_policy, notify
+from .detect import STRIPPED, has_pii, redact_secrets, scan, strip_injections
+from .gateway import INJECTIONS, WARNING, Denied, check_rate, get_policy, notify
 
 TIERS = {
     "easy": os.getenv("MODEL_EASY", "anthropic/claude-haiku-4-5"),
@@ -86,6 +88,68 @@ async def embed(text: str) -> list[float]:
     return [x / n for x in v]
 
 
+# ---- guards for chatbots and RAG --------------------------------------------------------
+GUARDED_ROLES = {"user", "tool"}  # system prompts are the developer's own, so trusted
+
+
+async def _clean(text: str, policy) -> tuple[str, int, list[str]]:
+    thr = policy.injection_threshold
+    score, reasons = await scan(text, thr)
+    if score < thr:
+        return text, 0, []
+    mode = policy.on_prompt_injection
+    if mode == "warn":
+        return f"{WARNING}\n\n{text}", 0, reasons
+    if mode == "strip":
+        new, n, why = await asyncio.to_thread(strip_injections, text, thr)
+        if n and (await scan(new.replace(STRIPPED, ""), thr))[0] < thr:
+            return new, n, why
+    raise Denied(f"request contains a prompt injection ({', '.join(reasons)})", 400)
+
+
+async def guard_input(policy, messages: list) -> tuple[list, dict]:
+    """Scan user and tool messages (where RAG context and pasted content live) for injection."""
+    if policy.on_prompt_injection == "allow":
+        return messages, {}
+    out, removed, reasons = [], 0, set()
+    for m in messages:
+        m = dict(m)
+        if m.get("role") in GUARDED_ROLES:
+            c = m.get("content")
+            if isinstance(c, str):
+                m["content"], n, r = await _clean(c, policy)
+                removed, reasons = removed + n, reasons | set(r)
+            elif isinstance(c, list):  # multi-part content: guard each text part
+                parts = []
+                for p in c:
+                    if isinstance(p, dict) and p.get("type") == "text":
+                        t, n, r = await _clean(p.get("text", ""), policy)
+                        p, removed, reasons = {**p, "text": t}, removed + n, reasons | set(r)
+                    parts.append(p)
+                m["content"] = parts
+        out.append(m)
+    if not reasons:
+        return out, {}
+    return out, {"input": {"action": policy.on_prompt_injection, "paragraphs_removed": removed,
+                           "reasons": sorted(reasons)}}
+
+
+def guard_output(policy, out: dict) -> dict:
+    """Mask or withhold secrets and card numbers in the model's answer."""
+    if policy.on_output_leak == "allow":
+        return {}
+    found = set()
+    for ch in out.get("choices") or []:
+        msg = ch.get("message") or {}
+        if isinstance(msg.get("content"), str):
+            clean, kinds = redact_secrets(msg["content"])
+            if kinds:
+                found |= set(kinds)
+                msg["content"] = clean if policy.on_output_leak == "mask" else \
+                    f"[response withheld by AgentShield: it contained {', '.join(kinds)}]"
+    return {"output": {"action": policy.on_output_leak, "kinds": sorted(found)}} if found else {}
+
+
 # ---- the call ----------------------------------------------------------------------------
 
 async def chat(agent: dict, body: dict):
@@ -95,6 +159,10 @@ async def chat(agent: dict, body: dict):
         raise Denied("messages is required", 400)
     await check_rate(agent["id"])
     policy = await get_policy(agent["policy"])
+    messages, report = await guard_input(policy, body["messages"])
+    if report:
+        INJECTIONS.labels(agent["name"]).inc()
+        body = {**body, "messages": messages}
     requested = body.get("model") or "auto"
     tier = difficulty(body) if requested == "auto" else None
     model = TIERS[tier] if tier else requested
@@ -106,7 +174,7 @@ async def chat(agent: dict, body: dict):
         tier, model = "easy", TIERS["easy"]
 
     rec = dict(agent_id=agent["id"], model_requested=requested, tier=tier, cache_hit=False,
-               tokens_in=0, tokens_out=0, cost_usd=0.0)
+               tokens_in=0, tokens_out=0, cost_usd=0.0, guard=json.dumps(report) if report else None)
     vec = None
     if cacheable(body):
         vec = await embed(_text(body))
@@ -130,10 +198,15 @@ async def chat(agent: dict, body: dict):
             model = TIERS[tier]
     rec.update(model_used=model, tier=tier)
 
-    if stream:
+    if stream:  # ponytail: no output masking on streams (a secret can span chunks); buffer if you need it
         return _stream(agent, rec, resp, params["messages"], t0)
 
     out = resp.model_dump()
+    if leak := guard_output(policy, out):
+        report.update(leak)
+        rec["guard"] = json.dumps(report)
+    if report:
+        out["agentshield"] = report  # extra field; OpenAI-compatible clients ignore it
     await _finish(agent, rec, resp, out.get("usage") or {}, t0)
     if vec is not None:
         await state.cache_put(agent["id"], requested, vec, out)

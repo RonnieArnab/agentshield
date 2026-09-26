@@ -69,7 +69,7 @@
 
   <h2>LLM calls</h2>
   <div class="tbl"><table>
-    <thead><tr><th>Time</th><th>Agent</th><th>Tier</th><th>Model</th><th>Cache</th><th>Tokens</th><th>Cost</th></tr></thead>
+    <thead><tr><th>Time</th><th>Agent</th><th>Tier</th><th>Model</th><th>Cache</th><th>Guard</th><th>Tokens</th><th>Cost</th></tr></thead>
     <tbody id="llm"></tbody></table></div>
 </main>
 <script>
@@ -115,9 +115,9 @@ async function refresh() {
 
     $("llm").innerHTML = llm.slice(0, 20).map(r => `<tr>
       <td>${time(r.created_at)}</td><td>${esc(r.agent)}</td><td>${esc(r.tier || "explicit")}</td>
-      <td>${esc(r.model_used)}</td><td>${r.cache_hit ? "hit" : ""}</td>
+      <td>${esc(r.model_used)}</td><td>${r.cache_hit ? "hit" : ""}</td><td>${guardText(r.guard)}</td>
       <td>${(r.tokens_in || 0) + (r.tokens_out || 0)}</td><td>$${(r.cost_usd || 0).toFixed(5)}</td></tr>`).join("")
-      || `<tr><td colspan="7" class="muted">No LLM calls yet.</td></tr>`;
+      || `<tr><td colspan="8" class="muted">No LLM calls yet.</td></tr>`;
 
     const sig = pending.map(a => a.id).join(",");
     if (sig !== shownPending) {  // don't re-render under the reviewer's cursor every poll
@@ -131,6 +131,15 @@ async function refresh() {
         || `<p class="muted">Nothing waiting.</p>`;
     }
   } catch (e) { $("err").textContent = e.message; }
+}
+
+function guardText(g) {
+  if (!g) return "";
+  try { g = JSON.parse(g); } catch { return ""; }
+  const bits = [];
+  if (g.input) bits.push(`<span class="pill strip">${esc(g.input.action)} ${esc(g.input.reasons.join(", "))}</span>`);
+  if (g.output) bits.push(`<span class="pill deny">${esc(g.output.action)} ${esc(g.output.kinds.join(", "))}</span>`);
+  return bits.join(" ");
 }
 
 async function decide(id, approve) {

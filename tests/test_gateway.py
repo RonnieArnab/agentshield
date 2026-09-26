@@ -1,16 +1,12 @@
 """End-to-end over the tool path with a fake upstream, on a throwaway SQLite DB."""
 import asyncio
-import os
 import pathlib
-import tempfile
 
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tempfile.mkdtemp()}/t.db"
-os.environ["APPROVAL_TIMEOUT_S"] = "2"
 
-import mcp_types as types  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+import mcp_types as types
+from sqlalchemy import select
 
-from agentshield import db, gateway  # noqa: E402
+from agentshield import db, gateway
 
 
 def ok(text):

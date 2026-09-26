@@ -1,16 +1,12 @@
 """Data-leak checks, cross-replica approvals, anomaly alerts, policy simulator, streaming."""
 import asyncio
-import os
-import tempfile
 
-os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{tempfile.mkdtemp()}/t.db"
-os.environ["APPROVAL_TIMEOUT_S"] = "5"
 
-import litellm  # noqa: E402
-import mcp_types as types  # noqa: E402
-from sqlalchemy import select  # noqa: E402
+import litellm
+import mcp_types as types
+from sqlalchemy import select
 
-from agentshield import db, gateway, llm  # noqa: E402
+from agentshield import db, gateway, llm
 
 
 def ok(text="done"):
