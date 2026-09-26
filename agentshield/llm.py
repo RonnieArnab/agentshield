@@ -14,7 +14,7 @@ from sqlalchemy import func, insert, select
 
 from . import db, state
 from .detect import STRIPPED, has_pii, redact_secrets, scan, strip_injections
-from .gateway import INJECTIONS, WARNING, Denied, check_rate, get_policy, notify
+from .gateway import INJECTIONS, WARNING, Denied, check_rate, get_policy, notify, raise_alert
 
 TIERS = {
     "easy": os.getenv("MODEL_EASY", "anthropic/claude-haiku-4-5"),
@@ -89,49 +89,86 @@ async def embed(text: str) -> list[float]:
 
 
 # ---- guards for chatbots and RAG --------------------------------------------------------
-GUARDED_ROLES = {"user", "tool"}  # system prompts are the developer's own, so trusted
+# The end user's latest message is theirs; every other user/tool message is content the app added
+# (RAG context, pasted documents, tool results). An attack in the first is the user misbehaving;
+# an attack in the second is poisoned content, not the user's fault. System prompts are trusted.
+GUARDED_ROLES = {"user", "tool"}
+USER_ATTACK_MSG = ("Your message was blocked because it looks like an attempt to override the assistant's "
+                   "instructions or extract hidden information. This attempt has been logged.")
 
 
-async def _clean(text: str, policy) -> tuple[str, int, list[str]]:
+async def _clean(text: str, policy, mode: str, own: bool) -> tuple[str, int, list[str]]:
     thr = policy.injection_threshold
     score, reasons = await scan(text, thr)
     if score < thr:
         return text, 0, []
-    mode = policy.on_prompt_injection
     if mode == "warn":
         return f"{WARNING}\n\n{text}", 0, reasons
     if mode == "strip":
         new, n, why = await asyncio.to_thread(strip_injections, text, thr)
         if n and (await scan(new.replace(STRIPPED, ""), thr))[0] < thr:
             return new, n, why
-    raise Denied(f"request contains a prompt injection ({', '.join(reasons)})", 400)
+    if own:
+        raise Denied(USER_ATTACK_MSG, 400, "user_prompt_injection", reasons=reasons)
+    raise Denied(f"request contains a prompt injection ({', '.join(reasons)})", 400, "prompt_injection",
+                 reasons=reasons)
+
+
+async def _guard_text(text: str, policy, own: bool, acc: dict) -> str:
+    if policy.on_input_secret == "mask":
+        text, kinds = redact_secrets(text)
+        acc["secrets"] |= set(kinds)
+    mode = policy.on_user_attack if own else policy.on_prompt_injection
+    if mode != "allow":
+        text, n, why = await _clean(text, policy, mode, own)
+        if why:
+            side = acc["user"] if own else acc["content"]
+            side["removed"] += n
+            side["reasons"] |= set(why)
+    return text
 
 
 async def guard_input(policy, messages: list) -> tuple[list, dict]:
-    """Scan user and tool messages (where RAG context and pasted content live) for injection."""
-    if policy.on_prompt_injection == "allow":
-        return messages, {}
-    out, removed, reasons = [], 0, set()
-    for m in messages:
+    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
+    acc = {"secrets": set(), "user": {"removed": 0, "reasons": set()}, "content": {"removed": 0, "reasons": set()}}
+    out = []
+    for i, m in enumerate(messages):
         m = dict(m)
         if m.get("role") in GUARDED_ROLES:
-            c = m.get("content")
+            own, c = i == last_user, m.get("content")
             if isinstance(c, str):
-                m["content"], n, r = await _clean(c, policy)
-                removed, reasons = removed + n, reasons | set(r)
+                m["content"] = await _guard_text(c, policy, own, acc)
             elif isinstance(c, list):  # multi-part content: guard each text part
-                parts = []
-                for p in c:
-                    if isinstance(p, dict) and p.get("type") == "text":
-                        t, n, r = await _clean(p.get("text", ""), policy)
-                        p, removed, reasons = {**p, "text": t}, removed + n, reasons | set(r)
-                    parts.append(p)
-                m["content"] = parts
+                m["content"] = [{**p, "text": await _guard_text(p.get("text", ""), policy, own, acc)}
+                                if isinstance(p, dict) and p.get("type") == "text" else p for p in c]
         out.append(m)
-    if not reasons:
-        return out, {}
-    return out, {"input": {"action": policy.on_prompt_injection, "paragraphs_removed": removed,
-                           "reasons": sorted(reasons)}}
+    report = {}
+    for side, mode in (("user", policy.on_user_attack), ("content", policy.on_prompt_injection)):
+        if acc[side]["reasons"]:
+            report[f"{side}_injection"] = {"action": mode, "paragraphs_removed": acc[side]["removed"],
+                                           "reasons": sorted(acc[side]["reasons"])}
+    if acc["secrets"]:
+        report["input_secrets"] = {"action": "mask", "kinds": sorted(acc["secrets"])}
+    return out, report
+
+
+async def guard_user(agent: dict, policy, body: dict) -> tuple[list, dict]:
+    """guard_input plus per-end-user strikes: repeated attacks from one `user` lock them out."""
+    user = body.get("user")
+    key = f"strike:{agent['id']}:{user}"
+    if user and await state.count(key) >= policy.max_user_warnings:
+        raise Denied(f"This chat is locked for up to {policy.lockout_minutes} minutes after repeated attempts "
+                     "to manipulate the assistant.", 403, "user_locked", locked=True)
+    try:
+        return await guard_input(policy, body["messages"])
+    except Denied as e:
+        if e.code != "user_prompt_injection":
+            raise
+        n = await state.bump(key, policy.lockout_minutes * 60) if user else 1
+        e.extra.update(warnings=n, max_warnings=policy.max_user_warnings, locked=n >= policy.max_user_warnings)
+        await raise_alert(agent, "user_attack", f"end user {user or '(unknown)'} sent a prompt injection "
+                          f"({', '.join(e.extra['reasons'])}); warning {n} of {policy.max_user_warnings}")
+        raise
 
 
 def guard_output(policy, out: dict) -> dict:
@@ -159,9 +196,10 @@ async def chat(agent: dict, body: dict):
         raise Denied("messages is required", 400)
     await check_rate(agent["id"])
     policy = await get_policy(agent["policy"])
-    messages, report = await guard_input(policy, body["messages"])
+    messages, report = await guard_user(agent, policy, body)
     if report:
-        INJECTIONS.labels(agent["name"]).inc()
+        if "user_injection" in report or "content_injection" in report:
+            INJECTIONS.labels(agent["name"]).inc()
         body = {**body, "messages": messages}
     requested = body.get("model") or "auto"
     tier = difficulty(body) if requested == "auto" else None

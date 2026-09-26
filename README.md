@@ -81,7 +81,17 @@ curl localhost:8000/v1/guard -H "Authorization: Bearer as_..." -H 'content-type:
 # {"flagged": true, "reasons": ["addressed_to_ai", "override"], "paragraphs_removed": 1, "text": "Order shipped.\n\n[removed by AgentShield: ...]"}
 ```
 
-Use the `chatbot` policy (or your own with `on_prompt_injection: strip` and `on_output_leak: mask`) for chatbots and RAG. Output masking is skipped on streamed responses.
+**Chatbots and RAG: how requests are judged.** AgentShield treats the **last user message** as the end user's own words and every other user or tool message as content your app added (retrieved documents, pasted files, tool results). Put retrieved context in its own message, before the question. Then:
+
+| What is found | Policy setting | What happens |
+|---|---|---|
+| An attack in the end user's own message | `on_user_attack: block` | No model call. Error `user_prompt_injection` with `warnings` and `max_warnings`; a `user_attack` alert is raised |
+| Repeated attacks from the same end user | `max_user_warnings`, `lockout_minutes` | Error `user_locked` for every request from that user until the lockout ends. Pass the OpenAI `user` field so strikes are per visitor |
+| Injected instructions in retrieved content | `on_prompt_injection: strip` | Those paragraphs are removed and the rest is answered. The response's `agentshield.content_injection` says so |
+| Secrets in documents or messages | `on_input_secret: mask` | Removed before the model sees them (`agentshield.input_secrets`) |
+| Secrets in the model's answer | `on_output_leak: mask` | Masked in the answer (`agentshield.output`) |
+
+Blocked requests return an OpenAI-style error object, so SDKs raise a normal API error and your app can switch on `error.code` to show a warning, a lockout screen or a generic refusal. The `chatbot` policy turns all of this on. Output masking is skipped on streamed responses.
 
 **Run the published image** instead of building. Images are pushed to GitHub's registry on each version tag; the `-classifier` variant includes the local classifier:
 
@@ -101,7 +111,7 @@ python -m demo.agent                # a real LLM agent working through the gatew
 python -m demo.rag_chat             # a RAG support chatbot at http://localhost:8100
 ```
 
-**RAG chatbot demo.** A support bot for a fictional outdoor shop answers from `demo/kb/`. The knowledge base hides an injected instruction in the refund page and an API key in an internal wiki page. Flip the "AgentShield protection" switch to compare. With it off, the bot told customers to email their card number and CVV to a fake address and printed the key. With it on, the injected paragraph is removed before the model sees it. The key is removed too: the classifier flags paragraphs containing raw keys, and output masking catches anything that still gets through.
+**RAG chatbot demo.** A support bot for a fictional outdoor shop answers from `demo/kb/`. Attacks typed by the visitor are refused with "Warning 1 of 3", and the third locks the chat. The knowledge base hides an injected instruction in the refund page and an API key in an internal wiki page. Flip the "AgentShield protection" switch to compare. With it off, the bot told customers to email their card number and CVV to a fake address and printed the key. With it on, the injected paragraph is removed before the model sees it. The key is removed too: the classifier flags paragraphs containing raw keys, and output masking catches anything that still gets through.
 
 The scripted demo shows, in order:
 
@@ -217,7 +227,7 @@ The rules are tuned for injected *instructions*. The public set is mostly direct
 ## Evals
 
 ```bash
-pytest -q                                   # 36 tests: policy, detection, tool path, LLM path, features
+pytest -q                                   # 37 tests: policy, detection, tool path, LLM path, features
 python -m evals.fetch_datasets              # refresh the public dataset (already committed)
 python -m evals.run --classifier protectai/deberta-v3-base-prompt-injection-v2
 python -m evals.agent_attacks --model openai/gpt-4o-mini   # needs the gateway running with an LLM key

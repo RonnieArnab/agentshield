@@ -2,6 +2,7 @@
 # only thing between the attacker and the goal.
 agent: eval-bot
 default: deny
+on_input_secret: allow  # keep benchmark numbers comparable with earlier runs
 on_injection: strip   # remove the injected paragraphs, keep the rest
 on_secret: allow
 rules:

@@ -1,6 +1,11 @@
 # For chatbots and RAG apps that only use the LLM endpoint (no MCP tools).
+# The end user's latest message is theirs; other user/tool messages are content your app added.
 agent: chatbot
 default: deny
-on_prompt_injection: strip   # scan user messages and retrieved documents; remove injected paragraphs
-on_output_leak: mask         # hide secrets and card numbers in the model's answers
+on_user_attack: block        # the user's own message is an attack: refuse, warn, count a strike
+max_user_warnings: 3         # strikes per end user (send the request's `user` field) before lockout
+lockout_minutes: 15
+on_prompt_injection: strip   # poisoned retrieved documents: remove the injected paragraphs, keep the rest
+on_input_secret: mask        # secrets in documents are removed before the model sees them
+on_output_leak: mask         # anything that still leaks into an answer is masked
 on_budget_exceeded: downgrade

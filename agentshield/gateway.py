@@ -38,9 +38,9 @@ QUARANTINED: set[str] = set()
 
 
 class Denied(Exception):
-    def __init__(self, msg, status=403):
+    def __init__(self, msg, status=403, code="blocked", **extra):
         super().__init__(msg)
-        self.status = status
+        self.status, self.code, self.extra = status, code, extra
 
 
 def hash_key(key: str) -> str:

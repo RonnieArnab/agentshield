@@ -59,6 +59,31 @@ async def once(key: str, ttl: int) -> bool:
     return True
 
 
+_mem_counts: dict[str, tuple[int, float]] = {}
+
+
+async def bump(key: str, ttl: int) -> int:
+    """Increment a counter that expires `ttl` seconds after its first increment. -> new value."""
+    if r:
+        k = f"as:count:{key}"
+        n = await r.incr(k)
+        if n == 1:
+            await r.expire(k, ttl)
+        return n
+    n, exp = _mem_counts.get(key, (0, 0.0))
+    if exp < time.time():
+        n, exp = 0, time.time() + ttl
+    _mem_counts[key] = (n + 1, exp)
+    return n + 1
+
+
+async def count(key: str) -> int:
+    if r:
+        return int(await r.get(f"as:count:{key}") or 0)
+    n, exp = _mem_counts.get(key, (0, 0.0))
+    return n if exp >= time.time() else 0
+
+
 # ---- semantic cache ----------------------------------------------------------------------
 _mem_cache: dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
 _index_ready = False

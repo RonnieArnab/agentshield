@@ -107,7 +107,11 @@ class Policy:
     injection_threshold: float = 0.8
     on_budget_exceeded: str = "block"  # block | downgrade
     on_secret: str = "block"  # block | approve | allow: secrets or card numbers in outgoing arguments
-    on_prompt_injection: str = "allow"  # LLM path, user/tool messages: allow | warn | strip | block
+    on_prompt_injection: str = "allow"  # LLM path, content the app adds (RAG context, tool results): allow | warn | strip | block
+    on_user_attack: str = "allow"  # LLM path, the end user's own latest message: allow | warn | strip | block
+    max_user_warnings: int = 3  # blocked attacks from one end user (the request's `user` field) before lockout
+    lockout_minutes: int = 15
+    on_input_secret: str = "mask"  # secrets in messages are removed before the model sees them: mask | allow
     on_output_leak: str = "mask"  # LLM path, model answers containing secrets: mask | block | allow
 
 
@@ -127,13 +131,19 @@ def load_policy(src: str) -> Policy:
                on_budget_exceeded=d.get("on_budget_exceeded", "block"),
                on_secret=d.get("on_secret", "block"),
                on_prompt_injection=d.get("on_prompt_injection", "allow"),
-               on_output_leak=d.get("on_output_leak", "mask"))
+               on_output_leak=d.get("on_output_leak", "mask"),
+               on_user_attack=d.get("on_user_attack", "allow"),
+               max_user_warnings=int(d.get("max_user_warnings", 3)),
+               lockout_minutes=int(d.get("lockout_minutes", 15)),
+               on_input_secret=d.get("on_input_secret", "mask"))
     if p.default not in ACTIONS or p.on_injection not in ("block", "strip", "warn", "approve") \
             or p.on_budget_exceeded not in ("block", "downgrade") or p.on_secret not in ("block", "approve", "allow") \
             or p.on_prompt_injection not in ("allow", "warn", "strip", "block") \
-            or p.on_output_leak not in ("mask", "block", "allow"):
+            or p.on_output_leak not in ("mask", "block", "allow") \
+            or p.on_user_attack not in ("allow", "warn", "strip", "block") \
+            or p.on_input_secret not in ("mask", "allow") or p.max_user_warnings < 1:
         raise ValueError("bad default / on_injection / on_budget_exceeded / on_secret / "
-                         "on_prompt_injection / on_output_leak value")
+                         "on_prompt_injection / on_output_leak / on_user_attack / on_input_secret value")
     return p
 
 

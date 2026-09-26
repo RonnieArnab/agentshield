@@ -53,7 +53,9 @@ def metrics():
 
 @app.exception_handler(Denied)
 async def denied(_, e: Denied):
-    return JSONResponse({"error": str(e)}, status_code=e.status)
+    # OpenAI-style error object, so SDKs surface the message; `code` tells apps which screen to show
+    return JSONResponse({"error": {"message": str(e), "type": "agentshield", "code": e.code, **e.extra}},
+                        status_code=e.status)
 
 
 def admin(authorization: str = Header("")):
