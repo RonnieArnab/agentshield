@@ -1,15 +1,16 @@
-"""LLM path: budget -> route by difficulty -> semantic cache -> provider (via LiteLLM) -> audit."""
+"""LLM path: budget -> route by difficulty -> semantic cache -> provider (via LiteLLM) -> audit.
+Supports stream=true (server-sent events, logged with usage when the stream ends)."""
 import math
 import os
 import re
 import time
-from collections import defaultdict, deque
 
+import anyio
 import litellm
 from prometheus_client import Counter
 from sqlalchemy import func, insert, select
 
-from . import db
+from . import db, state
 from .detect import has_pii
 from .gateway import Denied, check_rate, get_policy, notify
 
@@ -53,8 +54,6 @@ def difficulty(body: dict) -> str:
 
 
 # ---- budgets -----------------------------------------------------------------------------
-_alerted: set = set()
-
 
 async def budget_state(agent: dict) -> str:
     now = db.now()
@@ -68,21 +67,16 @@ async def budget_state(agent: dict) -> str:
     if frac >= 1:
         return "over"
     if frac >= 0.8:
-        if (agent["id"], day) not in _alerted:
-            _alerted.add((agent["id"], day))
+        if await state.once(f"budget:{agent['id']}:{day.date()}", 86400):
             await notify(f":money_with_wings: agent *{agent['name']}* has used {frac:.0%} of its LLM budget")
         return "warn"
     return "ok"
 
 
 # ---- semantic cache ----------------------------------------------------------------------
-# ponytail: in-process brute-force cosine over the last 1000 entries per agent;
-# move to Redis vector search for replicas or bigger caches.
-_cache: dict[int, deque] = defaultdict(lambda: deque(maxlen=1000))
-
 
 def cacheable(body: dict) -> bool:
-    return bool(EMBED_MODEL) and not body.get("tools") and \
+    return bool(EMBED_MODEL) and not body.get("tools") and not body.get("stream") and \
         all(m.get("role") != "tool" for m in body.get("messages", [])) and not has_pii(_text(body))
 
 
@@ -92,30 +86,21 @@ async def embed(text: str) -> list[float]:
     return [x / n for x in v]
 
 
-def lookup(agent_id: int, model: str, v: list[float]):
-    best, hit = SIMILARITY, None
-    for m, vec, resp in _cache[agent_id]:
-        if m == model and (s := sum(a * b for a, b in zip(v, vec))) >= best:
-            best, hit = s, resp
-    return hit
-
-
 # ---- the call ----------------------------------------------------------------------------
 
-async def chat(agent: dict, body: dict) -> dict:
+async def chat(agent: dict, body: dict):
+    """-> response dict, or an async iterator of SSE lines when body["stream"] is true."""
     t0 = time.perf_counter()
-    if body.get("stream"):
-        raise Denied("streaming is not supported yet; send stream=false", 400)
     if not body.get("messages"):
         raise Denied("messages is required", 400)
-    check_rate(agent["id"])
+    await check_rate(agent["id"])
     policy = await get_policy(agent["policy"])
     requested = body.get("model") or "auto"
     tier = difficulty(body) if requested == "auto" else None
     model = TIERS[tier] if tier else requested
 
-    state = await budget_state(agent)
-    if state == "over":
+    budget = await budget_state(agent)
+    if budget == "over":
         if policy.on_budget_exceeded == "block":
             raise Denied("LLM budget exhausted", 402)
         tier, model = "easy", TIERS["easy"]
@@ -125,35 +110,58 @@ async def chat(agent: dict, body: dict) -> dict:
     vec = None
     if cacheable(body):
         vec = await embed(_text(body))
-        if hit := lookup(agent["id"], requested, vec):
+        if hit := await state.cache_get(agent["id"], requested, vec, SIMILARITY):
             rec.update(model_used=hit.get("model"), cache_hit=True, latency_ms=(time.perf_counter() - t0) * 1000)
             await _log(agent, rec)
             return hit
 
     params = {k: v for k, v in body.items() if k in PASSTHROUGH}
-    while True:
+    stream = bool(body.get("stream"))
+    if stream:
+        params.update(stream=True, stream_options={"include_usage": True})
+    while True:  # errors before the first token retry one tier up
         try:
             resp = await litellm.acompletion(model=model, **params)
             break
         except Exception:
-            if not tier or tier == "hard" or state == "over":
+            if not tier or tier == "hard" or budget == "over":
                 raise
-            tier = ORDER[ORDER.index(tier) + 1]  # retry one tier up
+            tier = ORDER[ORDER.index(tier) + 1]
             model = TIERS[tier]
+    rec.update(model_used=model, tier=tier)
 
+    if stream:
+        return _stream(agent, rec, resp, params["messages"], t0)
+
+    out = resp.model_dump()
+    await _finish(agent, rec, resp, out.get("usage") or {}, t0)
+    if vec is not None:
+        await state.cache_put(agent["id"], requested, vec, out)
+    return out
+
+
+async def _stream(agent, rec, resp, messages, t0):
+    chunks = []
     try:
-        cost = litellm.completion_cost(completion_response=resp)
+        async for ch in resp:
+            chunks.append(ch)
+            yield f"data: {ch.model_dump_json(exclude_none=True)}\n\n"
+        yield "data: [DONE]\n\n"
+    finally:
+        with anyio.CancelScope(shield=True):  # log what was streamed even if the client hung up
+            full = litellm.stream_chunk_builder(chunks, messages=messages) if chunks else None
+            usage = (full.model_dump().get("usage") or {}) if full else {}
+            await _finish(agent, rec, full, usage, t0)
+
+
+async def _finish(agent, rec, resp, usage, t0):
+    try:
+        cost = litellm.completion_cost(completion_response=resp) if resp is not None else 0.0
     except Exception:
         cost = 0.0  # unknown model price
-    out = resp.model_dump()
-    usage = out.get("usage") or {}
-    rec.update(model_used=model, tier=tier, tokens_in=usage.get("prompt_tokens", 0),
-               tokens_out=usage.get("completion_tokens", 0), cost_usd=cost,
-               latency_ms=(time.perf_counter() - t0) * 1000)
+    rec.update(tokens_in=usage.get("prompt_tokens", 0), tokens_out=usage.get("completion_tokens", 0),
+               cost_usd=cost, latency_ms=(time.perf_counter() - t0) * 1000)
     await _log(agent, rec)
-    if vec is not None:
-        _cache[agent["id"]].append((requested, vec, out))
-    return out
 
 
 async def _log(agent, rec):

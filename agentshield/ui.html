@@ -49,12 +49,18 @@
     <div class="stat"><b id="s-blocked" class="deny">–</b><small>blocked</small></div>
     <div class="stat"><b id="s-inj" class="warn">–</b><small>injections caught</small></div>
     <div class="stat"><b id="s-pending">–</b><small>awaiting approval</small></div>
+    <div class="stat"><b id="s-alerts" class="deny">–</b><small>anomaly alerts</small></div>
     <div class="stat"><b id="s-llm">–</b><small>LLM calls</small></div>
     <div class="stat"><b id="s-cost">–</b><small>LLM spend</small></div>
   </div>
 
   <h2>Awaiting approval</h2>
   <div id="pending" aria-live="polite"><p class="muted">Nothing waiting.</p></div>
+
+  <h2>Anomaly alerts</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Time</th><th>Agent</th><th>Kind</th><th>Detail</th></tr></thead>
+    <tbody id="alerts"></tbody></table></div>
 
   <h2>Tool calls</h2>
   <div class="tbl"><table>
@@ -86,8 +92,12 @@ async function get(path) {
 async function refresh() {
   if (!keyEl.value) return;
   try {
-    const [tools, llm, pending] = await Promise.all([
-      get("/audit?limit=200"), get("/audit?kind=llm&limit=200"), get("/approvals?status=pending")]);
+    const [tools, llm, pending, alerts] = await Promise.all([
+      get("/audit?limit=200"), get("/audit?kind=llm&limit=200"), get("/approvals?status=pending"), get("/alerts?limit=20")]);
+    $("s-alerts").textContent = alerts.length;
+    $("alerts").innerHTML = alerts.map(a => `<tr><td>${time(a.created_at)}</td><td>${esc(a.agent)}</td>
+      <td><span class="pill deny">${esc(a.kind)}</span></td><td class="wrap">${esc(a.detail)}</td></tr>`).join("")
+      || `<tr><td colspan="4" class="muted">No alerts.</td></tr>`;
     $("err").textContent = "";
     $("s-calls").textContent = tools.length;
     $("s-blocked").textContent = tools.filter(t => t.decision === "deny").length;

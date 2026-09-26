@@ -1,0 +1,34 @@
+# One-click hosted demo on Render (https://render.com/deploy): gateway + Postgres + Redis.
+# After the first deploy, set OPENAI_API_KEY (or another provider key) in the gateway's environment.
+services:
+  - type: web
+    name: agentshield
+    runtime: docker
+    plan: starter
+    healthCheckPath: /ui
+    envVars:
+      - key: ADMIN_KEY
+        generateValue: true
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: MODEL_EASY
+        value: openai/gpt-4o-mini
+      - key: MODEL_MEDIUM
+        value: openai/gpt-4.1-mini
+      - key: MODEL_HARD
+        value: openai/gpt-4.1
+      - key: MCP_ALLOWED_HOSTS
+        value: "*"
+      - key: RATE_LIMIT_PER_MIN
+        value: "30"
+      - key: DATABASE_URL
+        fromDatabase: {name: agentshield-db, property: connectionString}
+      - key: REDIS_URL
+        fromService: {type: keyvalue, name: agentshield-redis, property: connectionString}
+  - type: keyvalue
+    name: agentshield-redis
+    plan: free
+    ipAllowList: []
+databases:
+  - name: agentshield-db
+    plan: free

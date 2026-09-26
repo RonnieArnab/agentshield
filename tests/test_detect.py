@@ -33,3 +33,16 @@ def test_strip_keeps_clean_paragraphs():
     out, n = strip_injections(doc)
     assert n == 1 and "Revenue grew 4%." in out and "Next review" in out and STRIPPED in out
     assert not rule_scan(out.replace(STRIPPED, ""))
+
+
+def test_mask_survives_quotes_after_secrets():
+    # regression: masking the JSON text could eat the backslash of an escaped quote and break the JSON
+    m = mask({"body": 'token=abcdef"x and PASSWORD: hunter22\nbye', "n": [1, {"to": "a@b.co"}]})
+    assert m == {"body": '***SECRET***"x and ***SECRET***\nbye', "n": [1, {"to": "***@b.co"}]}
+
+
+def test_strip_marker_is_not_rescanned_as_injection():
+    # regression: the classifier scored the "[removed by AgentShield...]" marker as an injection,
+    # so every stripped document was then blocked. The gateway re-scans with the marker removed.
+    from agentshield.gateway import STRIPPED as marker
+    assert marker == STRIPPED

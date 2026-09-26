@@ -1,3 +1,4 @@
+import asyncio
 import datetime as dt
 import hmac
 import logging
@@ -6,12 +7,12 @@ import pathlib
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from . import db, gateway, llm
+from . import db, detect, gateway, llm
 from .gateway import Denied
 from .mcp_proxy import mount_all
 
@@ -26,6 +27,13 @@ async def lifespan(app: FastAPI):
     if not ADMIN_KEY:
         raise RuntimeError("set ADMIN_KEY")
     await db.init()
+    if detect.CLASSIFIER:  # download/load the injection model now, not on the first tool call
+        try:
+            await asyncio.to_thread(detect.classify, "warm up")
+        except ImportError:
+            logging.error("INJECTION_MODEL is set but transformers is not installed "
+                          "(build with WITH_CLASSIFIER=1); continuing with the rules layer only")
+            detect.CLASSIFIER = None
     for f in sorted(POLICY_DIR.glob("*.yaml")):  # seed policies from disk
         await gateway.save_policy(f.read_text())
     async with AsyncExitStack() as stack:
@@ -59,7 +67,8 @@ async def agent(authorization: str = Header("")) -> dict:
 @app.post("/v1/chat/completions")
 async def chat(body: dict, a: dict = Depends(agent)):
     try:
-        return await llm.chat(a, body)
+        out = await llm.chat(a, body)
+        return out if isinstance(out, dict) else StreamingResponse(out, media_type="text/event-stream")
     except Denied:
         raise
     except Exception as e:  # provider / LiteLLM errors: missing key, unknown model, upstream outage
@@ -86,6 +95,24 @@ async def upload_policy(request: Request):
         return await gateway.save_policy((await request.body()).decode())
     except ValueError as e:
         raise HTTPException(422, str(e))
+
+
+@app.post("/policies/simulate", dependencies=[Depends(admin)])
+async def simulate_policy(request: Request, days: int = 7):
+    """Body: draft policy YAML. Shows how the last `days` of real calls would have been decided."""
+    try:
+        return await gateway.simulate((await request.body()).decode(), days)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
+@app.get("/alerts", dependencies=[Depends(admin)])
+async def list_alerts(limit: int = 50):
+    async with db.engine.connect() as c:
+        rows = await c.execute(select(db.alerts, db.agents.c.name.label("agent"))
+                               .join(db.agents, db.agents.c.id == db.alerts.c.agent_id)
+                               .order_by(db.alerts.c.id.desc()).limit(min(limit, 500)))
+    return [r._asdict() for r in rows]
 
 
 @app.get("/approvals", dependencies=[Depends(admin)])

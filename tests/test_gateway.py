@@ -59,7 +59,7 @@ async def main():
     assert r.is_error and "loop" in r.content[0].text
 
     async with db.engine.connect() as c:
-        rows = (await c.execute(select(db.tool_calls))).mappings().all()
+        rows = (await c.execute(select(db.tool_calls).where(db.tool_calls.c.agent_id == agent["id"]))).mappings().all()
     assert [r["decision"] for r in rows[:3]] == ["allow", "deny", "deny"]
     assert rows[0]["overhead_ms"] is not None
 

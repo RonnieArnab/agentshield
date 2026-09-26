@@ -4,7 +4,10 @@ import os
 from sqlalchemy import JSON, Boolean, Column, DateTime, Float, Integer, MetaData, String, Table, Text, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-engine = create_async_engine(os.getenv("DATABASE_URL", "sqlite+aiosqlite:///agentshield.db"))
+URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///agentshield.db")
+if URL.startswith(("postgres://", "postgresql://")):  # hosted providers hand out driver-less URLs
+    URL = "postgresql+asyncpg://" + URL.split("://", 1)[1]
+engine = create_async_engine(URL)
 md = MetaData()
 
 
@@ -78,6 +81,14 @@ approvals = Table(
     Column("reviewer", String),
     Column("requested_at", DateTime(timezone=True), default=now),
     Column("decided_at", DateTime(timezone=True)),
+)
+
+alerts = Table(
+    "alerts", md, _id(),
+    Column("agent_id", Integer, index=True),
+    Column("kind", String),  # new_tool | deny_spike
+    Column("detail", Text),
+    _created(),
 )
 
 

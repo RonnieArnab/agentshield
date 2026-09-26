@@ -72,8 +72,9 @@ def proxy_server(name: str, client: Client) -> Server:
 async def mount_all(app, stack: AsyncExitStack, config_path: str) -> list[str]:
     """Connect to every upstream, add a /mcp/{name} route per server, run their session managers."""
     hosts = os.getenv("MCP_ALLOWED_HOSTS", "127.0.0.1:*,localhost:*").split(",")
-    security = TransportSecuritySettings(enable_dns_rebinding_protection=True, allowed_hosts=hosts,
-                                         allowed_origins=[f"http://{h}" for h in hosts])
+    # "*" = public deployment behind its own domain: skip Host checks (agents still need an API key)
+    security = TransportSecuritySettings(enable_dns_rebinding_protection=hosts != ["*"], allowed_hosts=hosts,
+                                         allowed_origins=[f"http://{h}" for h in hosts] + [f"https://{h}" for h in hosts])
     names = []
     for name, cfg in load_servers(config_path).items():
         client = await stack.enter_async_context(upstream(cfg))

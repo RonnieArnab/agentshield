@@ -10,3 +10,8 @@ servers:
   weather:
     command: python
     args: ["demo/evil_server.py"]
+  # Fake inbox / email / customer DB used by demos and the agent benchmark.
+  office:
+    command: python
+    args: ["demo/office_server.py"]
+    env: {OFFICE_DIR: "sandbox/office"}

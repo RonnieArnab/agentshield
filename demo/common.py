@@ -25,13 +25,17 @@ async def sandbox_root(client: Client) -> str:
     return r.content[0].text.splitlines()[-1].strip()
 
 
-async def agent_loop(client: Client, llm_key: str, task: str, system: str, model: str = "auto",
+async def agent_loop(clients: Client | list[Client], llm_key: str, task: str, system: str, model: str = "auto",
                      max_steps: int = 10, log=print) -> list[tuple[str, dict, bool]]:
-    """Minimal tool-using agent. LLM calls always go through the gateway; `client` decides whether
-    tool calls do too. Returns [(tool, args, is_error)]."""
-    tools = [{"type": "function", "function": {"name": t.name, "description": t.description or "",
-                                               "parameters": t.input_schema}}
-             for t in (await client.list_tools()).tools]
+    """Minimal tool-using agent. LLM calls always go through the gateway; the MCP `clients` decide
+    whether tool calls do too. Returns [(tool, args, is_error)]."""
+    clients = clients if isinstance(clients, list) else [clients]
+    owner, tools = {}, []
+    for cl in clients:
+        for t in (await cl.list_tools()).tools:
+            owner[t.name] = cl
+            tools.append({"type": "function", "function": {"name": t.name, "description": t.description or "",
+                                                           "parameters": t.input_schema}})
     messages = [{"role": "system", "content": system}, {"role": "user", "content": task}]
     calls = []
     async with httpx.AsyncClient(timeout=900, headers={"Authorization": f"Bearer {llm_key}"}) as h:
@@ -49,7 +53,13 @@ async def agent_loop(client: Client, llm_key: str, task: str, system: str, model
             for call in msg["tool_calls"]:
                 name, args = call["function"]["name"], json.loads(call["function"]["arguments"] or "{}")
                 log(f"→ {name}({json.dumps(args)[:100]})")
-                res = await client.call_tool(name, args)
+                if name not in owner:
+                    res_text, is_err = f"unknown tool {name}", True
+                    log(f"  ✗ {res_text}")
+                    calls.append((name, args, True))
+                    messages.append({"role": "tool", "tool_call_id": call["id"], "content": res_text})
+                    continue
+                res = await owner[name].call_tool(name, args)
                 text = "\n".join(x.text for x in res.content if hasattr(x, "text"))
                 log(f"  {'✗' if res.is_error else '✓'} {text[:160]!r}")
                 calls.append((name, args, bool(res.is_error)))

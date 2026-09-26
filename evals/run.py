@@ -1,5 +1,10 @@
-"""Detection eval: python -m evals.run  -> detection rate, false-positive rate, p50/p95 scan latency.
-Grow the sets toward ~300 each (e.g. HF datasets deepset/prompt-injections, jackhhao/jailbreak-classification)."""
+"""Detection eval on the hand-written set and the public deepset set.
+
+    python -m evals.run                     # rules layer only
+    python -m evals.run --classifier protectai/deberta-v3-base-prompt-injection-v2   # rules vs rules+classifier
+    python -m evals.run -v                  # also print misses and false positives
+Needs `pip install .[classifier]` for --classifier. Fetch data with `python -m evals.fetch_datasets`.
+"""
 import asyncio
 import json
 import pathlib
@@ -7,38 +12,62 @@ import statistics
 import sys
 import time
 
-from agentshield.detect import scan
+from agentshield import detect
 
 HERE = pathlib.Path(__file__).parent
+SETS = {"hand-written": ("attacks.jsonl", "safe.jsonl"),
+        "deepset": ("data/deepset_attacks.jsonl", "data/deepset_safe.jsonl")}
+VERBOSE = "-v" in sys.argv
+THRESHOLD = 0.8
 
 
 def load(name):
-    return [json.loads(l)["text"] for l in (HERE / name).read_text().splitlines() if l.strip()]
+    p = HERE / name
+    return [json.loads(line)["text"] for line in p.read_text().splitlines() if line.strip()] if p.exists() else []
 
 
-async def run(threshold=0.8):
-    lat, res = [], {}
-    for name in ("attacks.jsonl", "safe.jsonl"):
-        flagged = 0
-        for t in load(name):
+async def rates(attacks, safe):
+    lat, flagged = [], {}
+    for label, texts in (("attack", attacks), ("safe", safe)):
+        n = 0
+        for t in texts:
             t0 = time.perf_counter()
-            score, reasons = await scan(t, threshold)
+            score, reasons = await detect.scan(t, THRESHOLD)
             lat.append((time.perf_counter() - t0) * 1000)
-            if score >= threshold:
-                flagged += 1
-            elif name == "attacks.jsonl" and "-v" in sys.argv:
-                print("MISSED:", t[:90])
-            if score >= threshold and name == "safe.jsonl" and "-v" in sys.argv:
-                print("FALSE POSITIVE:", t[:90], reasons)
-        res[name] = (flagged, len(load(name)))
-    (a, na), (s, ns) = res["attacks.jsonl"], res["safe.jsonl"]
-    q = statistics.quantiles(lat, n=20)
-    print("| metric | value |\n|---|---|")
-    print(f"| detection rate | {a / na:.0%} ({a}/{na}) |")
-    print(f"| false-positive rate | {s / ns:.0%} ({s}/{ns}) |")
-    print(f"| scan latency p50 / p95 | {statistics.median(lat):.1f} ms / {q[18]:.1f} ms |")
-    return a / na, s / ns
+            hit = score >= THRESHOLD
+            n += hit
+            if VERBOSE and hit != (label == "attack"):
+                print(f"  {'MISSED' if label == 'attack' else 'FALSE POSITIVE'}: {t[:100]!r} {reasons}")
+        flagged[label] = n
+    return flagged["attack"] / len(attacks), flagged["safe"] / len(safe), lat
+
+
+async def run_config(name):
+    cells, lat = [], []
+    for set_name, (a, s) in SETS.items():
+        attacks, safe = load(a), load(s)
+        if not attacks:
+            continue
+        det, fp, l = await rates(attacks, safe)
+        lat += l
+        cells.append(f"{det:.0%} / {fp:.0%}")
+    return f"| {name} | " + " | ".join(cells) + f" | {statistics.median(lat):.1f} ms |"
+
+
+async def main():
+    header = "| detector | " + " | ".join(f"{k} ({len(load(v[0]))}+{len(load(v[1]))}) detect / FP"
+                                        for k, v in SETS.items() if load(v[0])) + " | median latency |"
+    rows = []
+    model = sys.argv[sys.argv.index("--classifier") + 1] if "--classifier" in sys.argv else None
+    detect.CLASSIFIER = None
+    rows.append(await run_config("rules only"))
+    if model:
+        detect.CLASSIFIER = model
+        detect.classify("warm up")  # load the model outside the timing
+        rows.append(await run_config(f"rules + {model.split('/')[-1]}"))
+    print(header + "\n|" + "---|" * (header.count("|") - 1))
+    print("\n".join(rows))
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    asyncio.run(main())

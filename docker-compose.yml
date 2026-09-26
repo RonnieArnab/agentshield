@@ -1,18 +1,43 @@
 services:
   gateway:
-    build: .
+    build:
+      context: .
+      args:
+        WITH_CLASSIFIER: ${WITH_CLASSIFIER:-0}   # 1 = bake in transformers + CPU torch for INJECTION_MODEL
     ports: ["8000:8000"]
     env_file: .env
-    volumes: ["./sandbox:/app/sandbox"]  # demos and evals read/write files here from the host
     environment:
       DATABASE_URL: postgresql+asyncpg://agentshield:agentshield@postgres/agentshield
+      REDIS_URL: redis://redis:6379/0
       MCP_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,gateway:*"
+    volumes:
+      - ./sandbox:/app/sandbox   # demos and evals read/write files here from the host
+      - hf-cache:/root/.cache/huggingface
     depends_on:
       postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
   postgres:
     image: postgres:17
     environment: {POSTGRES_USER: agentshield, POSTGRES_PASSWORD: agentshield, POSTGRES_DB: agentshield}
     volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck: {test: ["CMD", "pg_isready", "-U", "agentshield"], interval: 2s, retries: 30}
+  redis:
+    image: redis/redis-stack-server:7.4.0-v3   # includes vector search for the semantic cache
+    healthcheck: {test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 30}
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes: ["./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro"]
+    ports: ["9090:9090"]
+  grafana:
+    image: grafana/grafana:12.1.1
+    ports: ["3000:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/agentshield.json
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
 volumes:
   pgdata:
+  hf-cache:

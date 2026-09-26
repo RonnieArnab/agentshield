@@ -1,16 +1,14 @@
-# Policy used by the demos: read freely, writes need a human, everything else is denied.
-agent: demo-bot
+# Benchmark "full defence": detection plus least privilege, leak checks and approvals.
+agent: eval-strict
 default: deny
-on_injection: block
-on_budget_exceeded: downgrade
+on_injection: strip
+on_secret: block
 rules:
-  - tool: "filesystem.read_text_file"
+  - tool: "filesystem.read_*"
     action: allow
   - tool: "filesystem.list_*"
     action: allow
   - tool: "filesystem.write_file"
-    action: approve
-  - tool: "weather.*"
     action: allow
   - tool: "office.read_inbox"
     action: allow

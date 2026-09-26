@@ -106,6 +106,7 @@ class Policy:
     on_injection: str = "block"  # block | strip | warn | approve
     injection_threshold: float = 0.8
     on_budget_exceeded: str = "block"  # block | downgrade
+    on_secret: str = "block"  # block | approve | allow: secrets or card numbers in outgoing arguments
 
 
 def load_policy(src: str) -> Policy:
@@ -121,10 +122,11 @@ def load_policy(src: str) -> Policy:
     p = Policy(agent=d["agent"], default=d.get("default", "deny"), rules=rules,
                on_injection=d.get("on_injection", "block"),
                injection_threshold=float(d.get("injection_threshold", 0.8)),
-               on_budget_exceeded=d.get("on_budget_exceeded", "block"))
+               on_budget_exceeded=d.get("on_budget_exceeded", "block"),
+               on_secret=d.get("on_secret", "block"))
     if p.default not in ACTIONS or p.on_injection not in ("block", "strip", "warn", "approve") \
-            or p.on_budget_exceeded not in ("block", "downgrade"):
-        raise ValueError("bad default / on_injection / on_budget_exceeded value")
+            or p.on_budget_exceeded not in ("block", "downgrade") or p.on_secret not in ("block", "approve", "allow"):
+        raise ValueError("bad default / on_injection / on_budget_exceeded / on_secret value")
     return p
 
 

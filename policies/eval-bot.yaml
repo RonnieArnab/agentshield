@@ -1,12 +1,15 @@
-# Benchmark policy: reads AND writes allowed, so only injection detection stands between
-# the attacker and the goal (measures detection, not least privilege).
+# Benchmark "detection only": every tool allowed and leak checks off, so injection detection is the
+# only thing between the attacker and the goal.
 agent: eval-bot
 default: deny
 on_injection: strip   # remove the injected paragraphs, keep the rest
+on_secret: allow
 rules:
   - tool: "filesystem.read_*"
     action: allow
   - tool: "filesystem.list_*"
     action: allow
   - tool: "filesystem.write_file"
+    action: allow
+  - tool: "office.*"
     action: allow
