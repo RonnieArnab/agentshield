@@ -15,7 +15,7 @@ from prometheus_client import Counter, Histogram
 from sqlalchemy import func, insert, select, update
 
 from . import db
-from .detect import mask, scan
+from .detect import mask, scan, strip_injections
 from .policy import Policy, decide, load_policy
 
 log = logging.getLogger("agentshield")
@@ -30,6 +30,10 @@ INJECTIONS = Counter("agentshield_injections_total", "Tool outputs flagged as in
 APPROVALS = Counter("agentshield_approvals_total", "Approval outcomes", ["status"])
 OVERHEAD = Histogram("agentshield_overhead_seconds", "Latency added by the gateway per tool call",
                      buckets=(.005, .01, .025, .05, .1, .15, .25, .5, 1, 2.5))
+
+
+# "server.tool" names whose descriptions contain injected instructions (filled by mcp_proxy)
+QUARANTINED: set[str] = set()
 
 
 class Denied(Exception):
@@ -195,6 +199,8 @@ async def guarded_call(agent: dict, server: str, tool: str, args: dict, forward)
 
     try:
         check_rate(agent["id"])
+        if name in QUARANTINED:
+            raise Denied("tool quarantined: its description contains injected instructions")
         check_loop(agent["id"], name, args)
         policy = await get_policy(agent["policy"])
         action, rec["rule_matched"] = decide(policy, name, args)
@@ -215,7 +221,16 @@ async def guarded_call(agent: dict, server: str, tool: str, args: dict, forward)
         if score >= policy.injection_threshold:
             INJECTIONS.labels(agent["name"]).inc()
             rec["reason"] = f"injection: {', '.join(reasons)}"
-            if policy.on_injection == "block":
+            if policy.on_injection == "strip" and score == 1.0:  # rule hits can be localised; model scores can't
+                removed = 0
+                for c in result.content:
+                    if isinstance(c, types.TextContent):
+                        c.text, n = strip_injections(c.text)
+                        removed += n
+                if removed and (await scan(_text(result), policy.injection_threshold))[0] < policy.injection_threshold:
+                    rec["decision"], rec["reason"] = "strip", f"{rec['reason']} (removed {removed} paragraph(s))"
+                    return result
+            if policy.on_injection in ("block", "strip"):
                 raise Denied(f"tool output flagged as prompt injection ({', '.join(reasons)})")
             if policy.on_injection == "approve":
                 await approval(rec["reason"])

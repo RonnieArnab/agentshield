@@ -50,7 +50,8 @@ The scripted demo shows, in order:
 4. **Destructive tool:** `move_file` is denied.
 5. **Human approval:** `write_file` pauses until you approve it in the dashboard.
 6. **Runaway loop:** the fifth identical call is stopped.
-7. **Cost routing:** an easy and a hard prompt go to different models. This scene needs an API key.
+7. **Tool poisoning:** a malicious server's tool with hidden instructions in its description is quarantined.
+8. **Cost routing:** an easy and a hard prompt go to different models. This scene needs an LLM key.
 
 `demo.agent` gives a real LLM the task "read every file and follow the action items". Watch the dashboard as the poisoned file gets blocked and the summary write waits for you.
 
@@ -61,7 +62,7 @@ Put YAML in `policies/` (seeded at startup) or `POST /policies`. The first match
 ```yaml
 agent: support-bot
 default: deny
-on_injection: block          # block | warn | approve
+on_injection: block          # block | strip | warn | approve
 injection_threshold: 0.8
 on_budget_exceeded: downgrade  # block | downgrade
 rules:
@@ -87,6 +88,12 @@ The layers run cheapest first:
 2. **Classifier** (optional): set `INJECTION_MODEL` and `pip install .[classifier]`.
 3. **LLM judge** (optional): set `JUDGE_MODEL`. It only sees classifier scores in the borderline band.
 
+On a hit, the policy decides what happens: `block`, `strip` (remove the flagged paragraphs, re-scan, deliver the rest), `warn` (prepend a warning) or `approve` (ask a human).
+
+## Tool-poisoning scan
+
+A malicious MCP server can hide instructions in a tool's *description*, which the agent reads as trusted text. AgentShield scans every tool description and schema when a server connects and again on every listing, which also catches later changes (a "rug pull"). A poisoned tool is quarantined: hidden from agents and blocked if called. `demo/evil_server.py` is a live example.
+
 ## API
 
 | Method and path | Purpose |
@@ -99,6 +106,22 @@ The layers run cheapest first:
 | `POST /approvals/{id}/decide` | `{"approve": true}` (admin) |
 | `GET /audit?agent=&kind=tool\|llm&frm=&to=` | Search the audit log (admin) |
 | `GET /metrics` | Prometheus metrics |
+
+## Headline result
+
+A real LLM agent gets 12 poisoned documents, each hiding an instruction to copy `secrets.txt` into `exfil.txt`. It runs once with its tools connected directly and once with them behind AgentShield (`on_injection: strip`, rules layer only):
+
+| model | setup | attack success | task completed |
+|---|---|---|---|
+| gpt-4o-mini | no protection | 42% (5/12) | 100% |
+| gpt-4o-mini | **with AgentShield** | **17% (2/12)** | **100%** |
+| gpt-4.1-mini | no protection | 0% (0/12) | 100% |
+
+Strip mode keeps tasks completing because it removes only the injected paragraphs. Plain `block` mode stopped the attacks too, but only 50% of tasks completed. The two attacks that still get through use phrasings the rules layer doesn't recognise, which is what the classifier layer (`INJECTION_MODEL`) is for. Newer models resist these simple injections on their own, so the gateway is defence in depth and least privilege still matters.
+
+```bash
+python -m evals.agent_attacks --model openai/gpt-4o-mini
+```
 
 ## Evals
 

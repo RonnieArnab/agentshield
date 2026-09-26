@@ -7,5 +7,6 @@ RUN pip install --no-cache-dir .
 COPY policies ./policies
 COPY config.yaml ./
 COPY sandbox ./sandbox
+COPY demo/evil_server.py ./demo/evil_server.py
 EXPOSE 8000
 CMD ["uvicorn", "agentshield.app:app", "--host", "0.0.0.0", "--port", "8000"]

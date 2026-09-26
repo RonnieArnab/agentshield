@@ -10,3 +10,5 @@ rules:
     action: allow
   - tool: "filesystem.write_file"
     action: approve
+  - tool: "weather.*"
+    action: allow

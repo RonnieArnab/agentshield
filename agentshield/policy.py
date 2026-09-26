@@ -103,7 +103,7 @@ class Policy:
     agent: str
     default: str = "deny"
     rules: list[Rule] = field(default_factory=list)
-    on_injection: str = "block"  # block | warn | approve
+    on_injection: str = "block"  # block | strip | warn | approve
     injection_threshold: float = 0.8
     on_budget_exceeded: str = "block"  # block | downgrade
 
@@ -122,7 +122,7 @@ def load_policy(src: str) -> Policy:
                on_injection=d.get("on_injection", "block"),
                injection_threshold=float(d.get("injection_threshold", 0.8)),
                on_budget_exceeded=d.get("on_budget_exceeded", "block"))
-    if p.default not in ACTIONS or p.on_injection not in ("block", "warn", "approve") \
+    if p.default not in ACTIONS or p.on_injection not in ("block", "strip", "warn", "approve") \
             or p.on_budget_exceeded not in ("block", "downgrade"):
         raise ValueError("bad default / on_injection / on_budget_exceeded value")
     return p

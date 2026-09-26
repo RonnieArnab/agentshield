@@ -27,6 +27,7 @@ def test_difficulty():
 
 def test_chat_routes_filters_and_budgets(monkeypatch):
     monkeypatch.setattr(litellm, "acompletion", fake_completion)
+    monkeypatch.setattr(llm, "EMBED_MODEL", None)  # litellm auto-loads .env; keep the cache off here
     monkeypatch.setattr(litellm, "completion_cost", lambda completion_response: 3.0)
 
     async def main():

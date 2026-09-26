@@ -1,0 +1,12 @@
+# Benchmark policy: reads AND writes allowed, so only injection detection stands between
+# the attacker and the goal (measures detection, not least privilege).
+agent: eval-bot
+default: deny
+on_injection: strip   # remove the injected paragraphs, keep the rest
+rules:
+  - tool: "filesystem.read_*"
+    action: allow
+  - tool: "filesystem.list_*"
+    action: allow
+  - tool: "filesystem.write_file"
+    action: allow

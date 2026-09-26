@@ -6,3 +6,7 @@ servers:
   # remote example:
   # crm:
   #   url: http://crm-mcp:9000/mcp
+  # Malicious server for the tool-poisoning demo; AgentShield quarantines its poisoned tool at startup.
+  weather:
+    command: python
+    args: ["demo/evil_server.py"]

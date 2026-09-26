@@ -67,6 +67,21 @@ async def judge(text: str) -> bool:
     return "YES" in (r.choices[0].message.content or "").upper()
 
 
+STRIPPED = "[removed by AgentShield: suspected injected instructions]"
+
+
+def strip_injections(text: str) -> tuple[str, int]:
+    """Drop paragraphs the rules layer flags, keep the rest. -> (clean text, paragraphs removed)."""
+    # ponytail: paragraph granularity; a payload spread across paragraphs that each look innocent survives,
+    # which is why the caller re-scans the result.
+    paras = re.split(r"(\n\s*\n)", text)
+    removed = 0
+    for i in range(0, len(paras), 2):
+        if rule_scan(paras[i]):
+            paras[i], removed = STRIPPED, removed + 1
+    return "".join(paras), removed
+
+
 async def scan(text: str, threshold: float = 0.8) -> tuple[float, list[str]]:
     """-> (score 0..1, reasons). score >= threshold means flagged."""
     if hits := rule_scan(text):

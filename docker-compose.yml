@@ -3,6 +3,7 @@ services:
     build: .
     ports: ["8000:8000"]
     env_file: .env
+    volumes: ["./sandbox:/app/sandbox"]  # demos and evals read/write files here from the host
     environment:
       DATABASE_URL: postgresql+asyncpg://agentshield:agentshield@postgres/agentshield
       MCP_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,gateway:*"
