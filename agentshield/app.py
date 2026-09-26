@@ -58,7 +58,12 @@ async def agent(authorization: str = Header("")) -> dict:
 
 @app.post("/v1/chat/completions")
 async def chat(body: dict, a: dict = Depends(agent)):
-    return await llm.chat(a, body)
+    try:
+        return await llm.chat(a, body)
+    except Denied:
+        raise
+    except Exception as e:  # provider / LiteLLM errors: missing key, unknown model, upstream outage
+        raise HTTPException(502, f"LLM provider error: {e}"[:500])
 
 
 class NewAgent(BaseModel):

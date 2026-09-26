@@ -1,0 +1,12 @@
+# Policy used by the demos: read freely, writes need a human, everything else is denied.
+agent: demo-bot
+default: deny
+on_injection: block
+on_budget_exceeded: downgrade
+rules:
+  - tool: "filesystem.read_text_file"
+    action: allow
+  - tool: "filesystem.list_*"
+    action: allow
+  - tool: "filesystem.write_file"
+    action: approve

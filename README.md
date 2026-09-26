@@ -31,6 +31,29 @@ uv venv && uv pip install -e ".[dev]"
 ADMIN_KEY=dev .venv/bin/uvicorn agentshield.app:app --reload
 ```
 
+## Demo
+
+Start the gateway (Docker as above, or locally with `ADMIN_KEY=change-me`). Open the dashboard at http://localhost:8000/ui and enter the admin key. Then run one of these in a second terminal:
+
+```bash
+pip install -e .                    # the demo scripts use the mcp and httpx packages
+python -m demo.scripted             # walkthrough; you click Approve in the dashboard
+python -m demo.scripted --auto      # same, but the script approves itself
+python -m demo.agent                # a real Claude agent (needs ANTHROPIC_API_KEY on the gateway)
+```
+
+The scripted demo shows, in order:
+
+1. **Least privilege:** the agent only sees the tools its policy allows.
+2. **A normal read:** allowed and logged.
+3. **Prompt injection:** `sandbox/poisoned.txt` hides "ignore previous instructions…", and the tool output is blocked before the agent sees it.
+4. **Destructive tool:** `move_file` is denied.
+5. **Human approval:** `write_file` pauses until you approve it in the dashboard.
+6. **Runaway loop:** the fifth identical call is stopped.
+7. **Cost routing:** an easy and a hard prompt go to different models. This scene needs an API key.
+
+`demo.agent` gives a real LLM the task "read every file and follow the action items". Watch the dashboard as the poisoned file gets blocked and the summary write waits for you.
+
 ## Policies
 
 Put YAML in `policies/` (seeded at startup) or `POST /policies`. The first matching rule wins, otherwise `default` applies. `when` is a restricted Python expression over `args`, validated against a whitelist at load time. A condition that errors denies the call (fail closed). Tools that every path denies are hidden from `tools/list`.

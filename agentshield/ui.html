@@ -2,41 +2,131 @@
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AgentShield approvals</title>
+<title>AgentShield</title>
 <style>
-  body { font: 15px system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
-  .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-  pre { background: #f5f5f5; padding: .5rem; overflow-x: auto; white-space: pre-wrap; }
-  button { padding: .4rem 1rem; margin-right: .5rem; cursor: pointer; }
+  :root { --bg:#f7f7f5; --card:#fff; --fg:#1c1c1a; --mute:#6b6b66; --line:#e3e3de;
+          --ok:#1f7a3d; --bad:#b42318; --warn:#a15c00; --accent:#2f5bd3; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#161615; --card:#201f1d; --fg:#ecebe6; --mute:#9b9a93; --line:#34332f;
+            --ok:#4fbf73; --bad:#f07565; --warn:#e0a24a; --accent:#7c9cf5; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui,-apple-system,sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;
+           padding:14px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  h1 { font-size:17px; margin:0; } h1 span { color:var(--mute); font-weight:400; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.05em; color:var(--mute); margin:24px 0 8px; }
+  main { max-width:1200px; margin:0 auto; padding:0 20px 40px; }
+  input { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--fg); }
+  button { padding:6px 14px; border-radius:6px; border:1px solid var(--line); background:var(--card); color:var(--fg); cursor:pointer; font:inherit; }
+  button.ok { background:var(--ok); color:#fff; border-color:var(--ok); }
+  button.bad { background:var(--bad); color:#fff; border-color:var(--bad); }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:20px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .stat b { display:block; font-size:24px; font-variant-numeric:tabular-nums; }
+  .stat small { color:var(--mute); }
+  .card { background:var(--card); border:1px solid var(--warn); border-left:4px solid var(--warn);
+          border-radius:10px; padding:12px 14px; margin-bottom:10px; }
+  pre { background:var(--bg); padding:8px; border-radius:6px; overflow-x:auto; white-space:pre-wrap; margin:8px 0; font-size:12px; }
+  .tbl { overflow-x:auto; background:var(--card); border:1px solid var(--line); border-radius:10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { text-align:left; padding:7px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  td.wrap { white-space:normal; min-width:220px; color:var(--mute); }
+  th { color:var(--mute); font-weight:500; }
+  .pill { padding:1px 8px; border-radius:99px; font-size:12px; font-weight:600; }
+  .allow { color:var(--ok); } .deny { color:var(--bad); } .warn, .error { color:var(--warn); }
+  .muted { color:var(--mute); } #err { color:var(--bad); }
 </style>
-<h1>Pending approvals</h1>
-<p><label>Admin key <input id="key" type="password" autocomplete="off"></label> <button onclick="load()">Load</button></p>
-<div id="list" aria-live="polite"></div>
-<script>
-const keyEl = document.getElementById("key");
-keyEl.value = sessionStorage.getItem("ak") || "";
-const h = () => ({ Authorization: "Bearer " + keyEl.value, "Content-Type": "application/json" });
-const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+<header>
+  <h1>🛡 AgentShield <span>live dashboard</span></h1>
+  <form onsubmit="event.preventDefault(); save()">
+    <label>Admin key <input id="key" type="password" autocomplete="off" size="14"></label>
+    <button>Connect</button> <span id="err" role="alert"></span>
+  </form>
+</header>
+<main>
+  <div class="stats">
+    <div class="stat"><b id="s-calls">–</b><small>tool calls</small></div>
+    <div class="stat"><b id="s-blocked" class="deny">–</b><small>blocked</small></div>
+    <div class="stat"><b id="s-inj" class="warn">–</b><small>injections caught</small></div>
+    <div class="stat"><b id="s-pending">–</b><small>awaiting approval</small></div>
+    <div class="stat"><b id="s-llm">–</b><small>LLM calls</small></div>
+    <div class="stat"><b id="s-cost">–</b><small>LLM spend</small></div>
+  </div>
 
-async function load() {
-  sessionStorage.setItem("ak", keyEl.value);
-  const r = await fetch("/approvals?status=pending", { headers: h() });
-  const list = document.getElementById("list");
-  if (!r.ok) { list.textContent = "Error " + r.status; return; }
-  const rows = await r.json();
-  list.innerHTML = rows.length ? rows.map(a => `
-    <div class="card">
-      <b>#${a.id}</b> agent <b>${esc(a.agent)}</b> wants <code>${esc(a.tool)}</code><br>
-      <small>${esc(a.reason)} · ${esc(a.requested_at)}</small>
-      <pre>${esc(JSON.stringify(a.args_json, null, 2))}</pre>
-      <button onclick="decide(${a.id}, true)">Approve</button>
-      <button onclick="decide(${a.id}, false)">Reject</button>
-    </div>`).join("") : "<p>Nothing waiting.</p>";
+  <h2>Awaiting approval</h2>
+  <div id="pending" aria-live="polite"><p class="muted">Nothing waiting.</p></div>
+
+  <h2>Tool calls</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Time</th><th>Agent</th><th>Tool</th><th>Decision</th><th>Reason / rule</th><th>Overhead</th></tr></thead>
+    <tbody id="tools"></tbody></table></div>
+
+  <h2>LLM calls</h2>
+  <div class="tbl"><table>
+    <thead><tr><th>Time</th><th>Agent</th><th>Tier</th><th>Model</th><th>Cache</th><th>Tokens</th><th>Cost</th></tr></thead>
+    <tbody id="llm"></tbody></table></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const keyEl = $("key");
+try { keyEl.value = sessionStorage.getItem("ak") || ""; } catch {}
+const hdr = () => ({ Authorization: "Bearer " + keyEl.value, "Content-Type": "application/json" });
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+const time = t => esc((t || "").slice(11, 19));
+let shownPending = "";
+
+function save() { try { sessionStorage.setItem("ak", keyEl.value); } catch {} refresh(); }
+
+async function get(path) {
+  const r = await fetch(path, { headers: hdr() });
+  if (!r.ok) throw new Error(r.status === 401 ? "wrong admin key" : "HTTP " + r.status);
+  return r.json();
 }
+
+async function refresh() {
+  if (!keyEl.value) return;
+  try {
+    const [tools, llm, pending] = await Promise.all([
+      get("/audit?limit=200"), get("/audit?kind=llm&limit=200"), get("/approvals?status=pending")]);
+    $("err").textContent = "";
+    $("s-calls").textContent = tools.length;
+    $("s-blocked").textContent = tools.filter(t => t.decision === "deny").length;
+    $("s-inj").textContent = tools.filter(t => (t.reason || "").includes("injection")).length;
+    $("s-pending").textContent = pending.length;
+    $("s-llm").textContent = llm.length;
+    $("s-cost").textContent = "$" + llm.reduce((a, r) => a + (r.cost_usd || 0), 0).toFixed(4);
+
+    $("tools").innerHTML = tools.slice(0, 40).map(t => `<tr>
+      <td>${time(t.created_at)}</td><td>${esc(t.agent)}</td><td><code>${esc(t.server)}.${esc(t.tool)}</code></td>
+      <td><span class="pill ${esc(t.decision)}">${esc(t.decision)}</span></td>
+      <td class="wrap">${esc(t.reason || t.rule_matched)}</td>
+      <td>${t.overhead_ms == null ? "" : t.overhead_ms.toFixed(1) + " ms"}</td></tr>`).join("")
+      || `<tr><td colspan="6" class="muted">No calls yet.</td></tr>`;
+
+    $("llm").innerHTML = llm.slice(0, 20).map(r => `<tr>
+      <td>${time(r.created_at)}</td><td>${esc(r.agent)}</td><td>${esc(r.tier || "explicit")}</td>
+      <td>${esc(r.model_used)}</td><td>${r.cache_hit ? "hit" : ""}</td>
+      <td>${(r.tokens_in || 0) + (r.tokens_out || 0)}</td><td>$${(r.cost_usd || 0).toFixed(5)}</td></tr>`).join("")
+      || `<tr><td colspan="7" class="muted">No LLM calls yet.</td></tr>`;
+
+    const sig = pending.map(a => a.id).join(",");
+    if (sig !== shownPending) {  // don't re-render under the reviewer's cursor every poll
+      shownPending = sig;
+      $("pending").innerHTML = pending.map(a => `<div class="card">
+        <b>#${a.id}</b> agent <b>${esc(a.agent)}</b> wants <code>${esc(a.tool)}</code>
+        <div class="muted">${esc(a.reason)}</div>
+        <pre>${esc(JSON.stringify(a.args_json, null, 2))}</pre>
+        <button class="ok" onclick="decide(${a.id}, true)">Approve</button>
+        <button class="bad" onclick="decide(${a.id}, false)">Reject</button></div>`).join("")
+        || `<p class="muted">Nothing waiting.</p>`;
+    }
+  } catch (e) { $("err").textContent = e.message; }
+}
+
 async function decide(id, approve) {
-  await fetch(`/approvals/${id}/decide`, { method: "POST", headers: h(), body: JSON.stringify({ approve, reviewer: "web-ui" }) });
-  load();
+  await fetch(`/approvals/${id}/decide`, { method: "POST", headers: hdr(), body: JSON.stringify({ approve, reviewer: "dashboard" }) });
+  shownPending = ""; refresh();
 }
-if (keyEl.value) load();
-setInterval(() => keyEl.value && load(), 5000);
+refresh();
+setInterval(refresh, 2000);
 </script>
