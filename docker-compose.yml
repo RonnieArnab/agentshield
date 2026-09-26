@@ -1,0 +1,17 @@
+services:
+  gateway:
+    build: .
+    ports: ["8000:8000"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://agentshield:agentshield@postgres/agentshield
+      MCP_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,gateway:*"
+    depends_on:
+      postgres: {condition: service_healthy}
+  postgres:
+    image: postgres:17
+    environment: {POSTGRES_USER: agentshield, POSTGRES_PASSWORD: agentshield, POSTGRES_DB: agentshield}
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck: {test: ["CMD", "pg_isready", "-U", "agentshield"], interval: 2s, retries: 30}
+volumes:
+  pgdata:

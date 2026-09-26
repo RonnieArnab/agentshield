@@ -1,0 +1,8 @@
+# Upstream MCP servers. Each is exposed to agents at /mcp/<name>; policy tool names are "<name>.<tool>".
+servers:
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "./sandbox"]
+  # remote example:
+  # crm:
+  #   url: http://crm-mcp:9000/mcp

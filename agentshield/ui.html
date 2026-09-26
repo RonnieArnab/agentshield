@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AgentShield approvals</title>
+<style>
+  body { font: 15px system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+  pre { background: #f5f5f5; padding: .5rem; overflow-x: auto; white-space: pre-wrap; }
+  button { padding: .4rem 1rem; margin-right: .5rem; cursor: pointer; }
+</style>
+<h1>Pending approvals</h1>
+<p><label>Admin key <input id="key" type="password" autocomplete="off"></label> <button onclick="load()">Load</button></p>
+<div id="list" aria-live="polite"></div>
+<script>
+const keyEl = document.getElementById("key");
+keyEl.value = sessionStorage.getItem("ak") || "";
+const h = () => ({ Authorization: "Bearer " + keyEl.value, "Content-Type": "application/json" });
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+async function load() {
+  sessionStorage.setItem("ak", keyEl.value);
+  const r = await fetch("/approvals?status=pending", { headers: h() });
+  const list = document.getElementById("list");
+  if (!r.ok) { list.textContent = "Error " + r.status; return; }
+  const rows = await r.json();
+  list.innerHTML = rows.length ? rows.map(a => `
+    <div class="card">
+      <b>#${a.id}</b> agent <b>${esc(a.agent)}</b> wants <code>${esc(a.tool)}</code><br>
+      <small>${esc(a.reason)} · ${esc(a.requested_at)}</small>
+      <pre>${esc(JSON.stringify(a.args_json, null, 2))}</pre>
+      <button onclick="decide(${a.id}, true)">Approve</button>
+      <button onclick="decide(${a.id}, false)">Reject</button>
+    </div>`).join("") : "<p>Nothing waiting.</p>";
+}
+async function decide(id, approve) {
+  await fetch(`/approvals/${id}/decide`, { method: "POST", headers: h(), body: JSON.stringify({ approve, reviewer: "web-ui" }) });
+  load();
+}
+if (keyEl.value) load();
+setInterval(() => keyEl.value && load(), 5000);
+</script>

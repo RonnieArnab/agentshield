@@ -1,0 +1,12 @@
+agent: research-bot
+default: deny
+on_injection: warn
+rules:
+  - tool: "filesystem.read_*"
+    action: allow
+  - tool: "filesystem.list_*"
+    action: allow
+  - tool: "filesystem.search_files"
+    action: allow
+  - tool: "filesystem.write_file"
+    action: approve

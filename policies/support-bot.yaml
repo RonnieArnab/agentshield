@@ -1,0 +1,18 @@
+agent: support-bot
+default: deny
+on_injection: block        # block | warn | approve
+injection_threshold: 0.8
+on_budget_exceeded: downgrade   # block | downgrade
+rules:
+  - tool: "crm.read_*"
+    action: allow
+  - tool: "email.send"
+    action: approve
+    when: "not endswith(args.to, '@mycompany.com')"
+  - tool: "email.send"
+    action: allow
+  - tool: "db.query"
+    action: allow
+    when: "sql_is_read_only(args.sql)"
+  - tool: "*.delete*"
+    action: deny
